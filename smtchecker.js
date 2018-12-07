@@ -6,7 +6,7 @@ var tmp = require('tmp');
 var potentialSolvers = [
   {
     name: 'z3',
-    params: ''
+    params: '-smt2'
   },
   {
     name: 'cvc4',
@@ -16,17 +16,37 @@ var potentialSolvers = [
 var solvers = potentialSolvers.filter(solver => commandExistsSync(solver.name));
 
 function solve (query) {
-  var tmpFile = tmp.fileSync();
+  var tmpFile = tmp.fileSync({ postfix: '.smt2' });
   fs.writeFileSync(tmpFile.name, query);
   // TODO For now only the first SMT solver found is used.
   // At some point a computation similar to the one done in
   // SMTPortfolio::check should be performed, where the results
   // given by different solvers are compared and an error is
   // reported if solvers disagree (i.e. SAT vs UNSAT).
-  var solverOutput = execSync(solvers[0].name + ' ' + solvers[0].params + ' ' + tmpFile.name);
+  var outputStr;
+  try {
+    var solverOutput = execSync(
+      solvers[0].name + ' ' + solvers[0].params + ' ' + tmpFile.name, {
+        timeout: 10000
+      }
+    );
+    outputStr = solverOutput.toString();
+  } catch (e) {
+    // execSync throws if the process times out or returns != 0.
+    // The latter might happen with z3 if the query asks for a model
+    // for an UNSAT formula. We can still use stdout.
+    outputStr = e.stdout.toString();
+    if (
+      !outputStr.startsWith('sat') &&
+      !outputStr.startsWith('unsat') &&
+      !outputStr.startsWith('unknown')
+    ) {
+      throw new Error('Failed solve SMT query. ' + e.toString());
+    }
+  }
   // Trigger early manual cleanup
   tmpFile.removeCallback();
-  return solverOutput.toString();
+  return { contents: outputStr };
 }
 
 // This function checks the standard JSON output for auxiliaryInputRequested,
@@ -51,7 +71,7 @@ function handleSMTQueries (inputJSON, outputJSON) {
 
   var responses = {};
   for (var query in queries) {
-    responses[query] = solve(queries[query]);
+    responses[query] = solve(queries[query]).contents;
   }
 
   // Note: all existing solved queries are replaced.
@@ -61,5 +81,6 @@ function handleSMTQueries (inputJSON, outputJSON) {
 }
 
 module.exports = {
-  handleSMTQueries: handleSMTQueries
+  handleSMTQueries: handleSMTQueries,
+  smtSolve: solve
 };
